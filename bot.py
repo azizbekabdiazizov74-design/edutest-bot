@@ -2,6 +2,8 @@ import logging
 import asyncio
 import os
 import random
+import aiohttp
+import json
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -15,15 +17,30 @@ from questions import QUESTIONS
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "123456789"))
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "8600 1234 5678 9012")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
 MONTHLY_PRICE = 29900
 YEARLY_PRICE = 199000
 FREE_TESTS_PER_DAY = 3
+
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 db = Database()
 
+# ===== GEMINI AI =====
+async def ask_gemini(prompt: str) -> str:
+    try:
+        async with aiohttp.ClientSession() as session:
+            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            async with session.post(GEMINI_URL, json=payload) as resp:
+                data = await resp.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        return f"❌ Xato: {str(e)}"
+
+# ===== STATES =====
 class TestState(StatesGroup):
     choosing_subject = State()
     choosing_count = State()
@@ -32,16 +49,21 @@ class TestState(StatesGroup):
 class PaymentState(StatesGroup):
     waiting_receipt = State()
 
-class DTMState(StatesGroup):
-    answering = State()
+class AIState(StatesGroup):
+    referat_topic = State()
+    konspekt_topic = State()
+    qa_question = State()
+    search_query = State()
 
+# ===== KLAVIATURALAR =====
 def main_menu_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📚 Test boshlash"), KeyboardButton(text="🎯 Kunlik challenge")],
         [KeyboardButton(text="🏆 Reyting"), KeyboardButton(text="👥 Referal")],
+        [KeyboardButton(text="📝 Referat yozish"), KeyboardButton(text="📖 Konspekt")],
+        [KeyboardButton(text="💬 AI Yordamchi"), KeyboardButton(text="🔍 Qidiruv")],
         [KeyboardButton(text="📝 DTM Simulyatsiya"), KeyboardButton(text="⭐ Premium")],
         [KeyboardButton(text="📊 Natijalarim"), KeyboardButton(text="👤 Profil")],
-        [KeyboardButton(text="🔔 Eslatmalar"), KeyboardButton(text="ℹ️ Yordam")]
     ], resize_keyboard=True)
 
 def subjects_kb():
@@ -94,19 +116,163 @@ async def start(message: types.Message):
                     ref_count = await db.get_referral_count(referrer_id)
                     days = 30 if ref_count >= 10 else 7 if ref_count >= 5 else 3 if ref_count >= 3 else 1
                     await db.set_premium(referrer_id, days)
-                    await bot.send_message(referrer_id,
-                        f"🎉 Yangi do'st qo'shildi! Jami: {ref_count} kishi\n🎁 +{days} kun Premium!")
+                    await bot.send_message(referrer_id, f"🎉 Yangi do'st! Jami: {ref_count}\n🎁 +{days} kun Premium!")
         except: pass
     await message.answer(
         f"👋 Salom, <b>{user.first_name}</b>!\n\n"
         f"🎓 <b>SmartTalaba Bot</b>\n\n"
-        f"✅ 9 fandan testlar\n"
-        f"🎯 Kunlik challenge\n"
-        f"🏆 Reyting tizimi\n"
-        f"📝 DTM simulyatsiya\n"
-        f"👥 Referal — Premium ol!\n\n"
+        f"📚 Test ishlash\n🎯 Kunlik challenge\n"
+        f"📝 AI bilan referat yozish\n"
+        f"📖 Konspekt yaratish\n"
+        f"💬 AI yordamchi\n🔍 Qidiruv\n"
+        f"🏆 Reyting tizimi\n\n"
         f"Bepul: kuniga {FREE_TESTS_PER_DAY} ta test",
         reply_markup=main_menu_kb(), parse_mode="HTML")
+
+# ===== REFERAT =====
+@dp.message(F.text == "📝 Referat yozish")
+async def referat_start(message: types.Message, state: FSMContext):
+    await message.answer(
+        "📝 <b>Referat yozish</b>\n\n"
+        "Qaysi mavzuda referat kerak?\n"
+        "Masalan: <i>O'zbekiston tarixi, Fotosintez, Matematik analiz</i>",
+        parse_mode="HTML")
+    await state.set_state(AIState.referat_topic)
+
+@dp.message(AIState.referat_topic)
+async def write_referat(message: types.Message, state: FSMContext):
+    topic = message.text
+    await state.clear()
+    wait_msg = await message.answer("⏳ Referat yozilmoqda... (30-60 soniya)")
+    
+    prompt = f"""O'zbek tilida '{topic}' mavzusida to'liq referat yoz.
+Tuzilishi:
+1. Kirish (100-150 so'z)
+2. Asosiy qism (3-4 bo'lim, har biri 200-300 so'z)
+3. Xulosa (100 so'z)
+4. Foydalanilgan adabiyotlar (5 ta)
+
+Ilmiy uslubda, to'liq va sifatli yoz."""
+
+    result = await ask_gemini(prompt)
+    await wait_msg.delete()
+    
+    # Uzun matnni bo'lib yuborish
+    if len(result) > 4000:
+        parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
+        for i, part in enumerate(parts):
+            await message.answer(f"📝 <b>Referat ({i+1}/{len(parts)}):</b>\n\n{part}", parse_mode="HTML")
+            await asyncio.sleep(0.5)
+    else:
+        await message.answer(f"📝 <b>Referat: {topic}</b>\n\n{result}", parse_mode="HTML")
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📝 Boshqa mavzu", callback_data="new_referat")
+    await message.answer("✅ Referat tayyor!", reply_markup=builder.as_markup())
+
+# ===== KONSPEKT =====
+@dp.message(F.text == "📖 Konspekt")
+async def konspekt_start(message: types.Message, state: FSMContext):
+    await message.answer(
+        "📖 <b>Konspekt yaratish</b>\n\n"
+        "Qaysi mavzu yoki fan bo'yicha konspekt kerak?\n"
+        "Masalan: <i>Termodinamika 1-qonun, SQL asoslari</i>",
+        parse_mode="HTML")
+    await state.set_state(AIState.konspekt_topic)
+
+@dp.message(AIState.konspekt_topic)
+async def write_konspekt(message: types.Message, state: FSMContext):
+    topic = message.text
+    await state.clear()
+    wait_msg = await message.answer("⏳ Konspekt tayyorlanmoqda...")
+
+    prompt = f"""O'zbek tilida '{topic}' mavzusida qisqa va aniq konspekt yoz.
+Format:
+📌 Asosiy tushunchalar
+📋 Muhim ta'riflar  
+🔑 Kalit formulalar/qoidalar
+💡 Misollar
+❓ Nazorat savollari (5 ta)
+
+Strukturali, o'qishga qulay qilib yoz."""
+
+    result = await ask_gemini(prompt)
+    await wait_msg.delete()
+    
+    if len(result) > 4000:
+        parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
+        for i, part in enumerate(parts):
+            await message.answer(f"📖 <b>Konspekt ({i+1}/{len(parts)}):</b>\n\n{part}", parse_mode="HTML")
+            await asyncio.sleep(0.5)
+    else:
+        await message.answer(f"📖 <b>Konspekt: {topic}</b>\n\n{result}", parse_mode="HTML")
+
+# ===== AI YORDAMCHI =====
+@dp.message(F.text == "💬 AI Yordamchi")
+async def qa_start(message: types.Message, state: FSMContext):
+    await message.answer(
+        "💬 <b>AI Yordamchi</b>\n\n"
+        "Istalgan savolingizni bering!\n"
+        "Masalan:\n"
+        "• <i>Integral nima?</i>\n"
+        "• <i>Essay qanday yoziladi?</i>\n"
+        "• <i>Fotosintezni tushuntir</i>",
+        parse_mode="HTML")
+    await state.set_state(AIState.qa_question)
+
+@dp.message(AIState.qa_question)
+async def answer_qa(message: types.Message, state: FSMContext):
+    question = message.text
+    wait_msg = await message.answer("💭 O'ylanmoqda...")
+
+    prompt = f"""Sen o'zbek tilida javob beruvchi aqlli o'qituvchisan.
+Savol: {question}
+
+Aniq, tushunarli va qisqa javob ber. Kerak bo'lsa misollar keltir."""
+
+    result = await ask_gemini(prompt)
+    await wait_msg.delete()
+    await message.answer(f"💬 <b>Javob:</b>\n\n{result}", parse_mode="HTML")
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❓ Yana savol", callback_data="new_qa")
+    builder.button(text="🏠 Bosh menyu", callback_data="main_menu")
+    builder.adjust(2)
+    await message.answer("Yana savol berishingiz mumkin yoki boshqa xizmatdan foydalaning!", reply_markup=builder.as_markup())
+
+# ===== QIDIRUV =====
+@dp.message(F.text == "🔍 Qidiruv")
+async def search_start(message: types.Message, state: FSMContext):
+    await message.answer(
+        "🔍 <b>Qidiruv</b>\n\n"
+        "Nima haqida ma'lumot kerak?\n"
+        "Masalan: <i>Albert Einstein, Kvant fizikasi, O'zbekiston</i>",
+        parse_mode="HTML")
+    await state.set_state(AIState.search_query)
+
+@dp.message(AIState.search_query)
+async def do_search(message: types.Message, state: FSMContext):
+    query = message.text
+    await state.clear()
+    wait_msg = await message.answer("🔍 Qidirilmoqda...")
+
+    prompt = f"""'{query}' haqida O'zbek tilida to'liq va aniq ma'lumot ber.
+Quyidagilarni o'z ichiga ol:
+📌 Asosiy ma'lumot
+📅 Muhim sanalar (agar mavjud)
+🌟 Qiziqarli faktlar
+📚 Qo'shimcha o'rganish uchun tavsiyalar"""
+
+    result = await ask_gemini(prompt)
+    await wait_msg.delete()
+    
+    if len(result) > 4000:
+        parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
+        for part in parts:
+            await message.answer(part, parse_mode="HTML")
+            await asyncio.sleep(0.3)
+    else:
+        await message.answer(f"🔍 <b>{query}</b>\n\n{result}", parse_mode="HTML")
 
 # ===== TEST =====
 @dp.message(F.text == "📚 Test boshlash")
@@ -117,6 +283,58 @@ async def start_test(message: types.Message, state: FSMContext):
         return
     await message.answer("📚 <b>Fan tanlang:</b>", reply_markup=subjects_kb(), parse_mode="HTML")
     await state.set_state(TestState.choosing_subject)
+
+@dp.message(F.text == "🎯 Kunlik challenge")
+async def daily_challenge(message: types.Message, state: FSMContext):
+    done = await db.check_daily_challenge(message.from_user.id)
+    if done is not None:
+        await message.answer(f"✅ Bugungi challenge bajarildi!\n🏆 Jami ball: <b>{done}</b>\n⏰ Keyingi: ertaga!", parse_mode="HTML")
+        return
+    questions = get_questions("aralash", 5)
+    await state.update_data(questions=questions, current_q=0, correct=0, count=5, is_challenge=True, is_dtm=False)
+    await message.answer("🎯 <b>Kunlik Challenge!</b>\n\n5 savol — har to'g'ri +10 ball\n5/5 → +20 bonus! 🎁", parse_mode="HTML")
+    await send_question(message.chat.id, state, bot)
+    await state.set_state(TestState.answering)
+
+@dp.message(F.text == "📝 DTM Simulyatsiya")
+async def dtm_mode(message: types.Message, state: FSMContext):
+    if not await db.is_premium(message.from_user.id):
+        await message.answer("📝 <b>DTM Simulyatsiya — Premium!</b>\n\n90 savol, haqiqiy DTM sharoiti\n\n"
+            f"⭐ <b>{MONTHLY_PRICE:,} so'm/oy</b>", reply_markup=premium_kb(), parse_mode="HTML")
+        return
+    questions = get_questions("aralash", 90)
+    await state.update_data(questions=questions, current_q=0, correct=0, count=len(questions), is_dtm=True, is_challenge=False)
+    await message.answer("📝 <b>DTM Simulyatsiya!</b>\n90 ta savol\nOmad! 🍀", parse_mode="HTML")
+    await send_question(message.chat.id, state, bot)
+    await state.set_state(TestState.answering)
+
+@dp.message(F.text == "🏆 Reyting")
+async def leaderboard(message: types.Message):
+    top = await db.get_leaderboard()
+    if not top:
+        await message.answer("🏆 Hozircha reyting yo'q!")
+        return
+    medals = ["🥇","🥈","🥉"]
+    text = "🏆 <b>Top o'quvchilar</b>\n\n"
+    for i, u in enumerate(top):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        text += f"{medal} <b>{u['full_name'] or 'Noma\'lum'}</b> — {u['avg_score']:.0f}%\n"
+    rank = await db.get_user_rank(message.from_user.id)
+    if rank: text += f"\n📍 Sizning o'rningiz: <b>{rank}-o'rin</b>"
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(F.text == "👥 Referal")
+async def referral(message: types.Message):
+    uid = message.from_user.id
+    ref_count = await db.get_referral_count(uid)
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{uid}"
+    await message.answer(
+        f"👥 <b>Do'stlarni taklif qil!</b>\n\n"
+        f"🔗 <code>{ref_link}</code>\n\n"
+        f"👤 Taklif: <b>{ref_count} kishi</b>\n\n"
+        f"🎁 1 do'st → 1 kun\n3 do'st → 3 kun\n5 do'st → 7 kun\n10 do'st → 30 kun Premium",
+        parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("subject_"))
 async def choose_subject(callback: types.CallbackQuery, state: FSMContext):
@@ -138,101 +356,6 @@ async def choose_count(callback: types.CallbackQuery, state: FSMContext):
     await send_question(callback.message.chat.id, state, callback.bot)
     await state.set_state(TestState.answering)
 
-# ===== DTM SIMULYATSIYA =====
-@dp.message(F.text == "📝 DTM Simulyatsiya")
-async def dtm_mode(message: types.Message, state: FSMContext):
-    if not await db.is_premium(message.from_user.id):
-        await message.answer(
-            "📝 <b>DTM Simulyatsiya — Premium funksiya!</b>\n\n"
-            "90 ta savol, 90 daqiqa — haqiqiy DTM sharoitida!\n\n"
-            f"⭐ Premium: <b>{MONTHLY_PRICE:,} so'm/oy</b>",
-            reply_markup=premium_kb(), parse_mode="HTML")
-        return
-    questions = get_questions("aralash", 90)
-    await state.update_data(questions=questions, current_q=0, correct=0, count=len(questions), is_dtm=True, is_challenge=False)
-    await message.answer(
-        "📝 <b>DTM Simulyatsiya boshlanadi!</b>\n\n"
-        "📊 90 ta savol\n⏱ Vaqt: 90 daqiqa\n\n"
-        "Omad! 🍀", parse_mode="HTML")
-    await send_question(message.chat.id, state, bot)
-    await state.set_state(TestState.answering)
-
-# ===== KUNLIK CHALLENGE =====
-@dp.message(F.text == "🎯 Kunlik challenge")
-async def daily_challenge(message: types.Message, state: FSMContext):
-    done = await db.check_daily_challenge(message.from_user.id)
-    if done is not None:
-        await message.answer(
-            f"✅ Bugungi challenge bajarildi!\n"
-            f"🏆 Jami ball: <b>{done}</b>\n\n"
-            f"⏰ Keyingi challenge: ertaga!", parse_mode="HTML")
-        return
-    questions = get_questions("aralash", 5)
-    await state.update_data(questions=questions, current_q=0, correct=0, count=5, is_challenge=True, is_dtm=False)
-    await message.answer(
-        "🎯 <b>Kunlik Challenge!</b>\n\n"
-        "5 ta savol — har to'g'ri javob +10 ball\n"
-        "5/5 to'g'ri → +20 bonus ball! 🎁", parse_mode="HTML")
-    await send_question(message.chat.id, state, bot)
-    await state.set_state(TestState.answering)
-
-# ===== REYTING =====
-@dp.message(F.text == "🏆 Reyting")
-async def leaderboard(message: types.Message):
-    top = await db.get_leaderboard()
-    if not top:
-        await message.answer("🏆 Hozircha reyting yo'q. Test ishlang!")
-        return
-    medals = ["🥇", "🥈", "🥉"]
-    text = "🏆 <b>Top o'quvchilar</b>\n\n"
-    for i, u in enumerate(top):
-        medal = medals[i] if i < 3 else f"{i+1}."
-        text += f"{medal} <b>{u['full_name'] or 'Noma\'lum'}</b> — {u['avg_score']:.0f}% | ⚡{u['challenge_score']} ball\n"
-    rank = await db.get_user_rank(message.from_user.id)
-    if rank: text += f"\n📍 Sizning o'rningiz: <b>{rank}-o'rin</b>"
-    await message.answer(text, parse_mode="HTML")
-
-# ===== REFERAL =====
-@dp.message(F.text == "👥 Referal")
-async def referral(message: types.Message):
-    user_id = message.from_user.id
-    ref_count = await db.get_referral_count(user_id)
-    bot_info = await bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
-    await message.answer(
-        f"👥 <b>Do'stlarni taklif qil — Premium ol!</b>\n\n"
-        f"🔗 Sizning havola:\n<code>{ref_link}</code>\n\n"
-        f"👤 Taklif qilganlar: <b>{ref_count} kishi</b>\n\n"
-        f"🎁 <b>Mukofotlar:</b>\n"
-        f"• 1 do'st → 1 kun Premium\n"
-        f"• 3 do'st → 3 kun Premium\n"
-        f"• 5 do'st → 7 kun Premium\n"
-        f"• 10 do'st → 30 kun Premium",
-        parse_mode="HTML")
-
-# ===== ESLATMALAR =====
-@dp.message(F.text == "🔔 Eslatmalar")
-async def notifications(message: types.Message):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Yoqish", callback_data="notify_on")
-    builder.button(text="❌ O'chirish", callback_data="notify_off")
-    builder.adjust(2)
-    await message.answer(
-        "🔔 <b>Kunlik eslatmalar</b>\n\n"
-        "Har kuni ertalab soat 9:00 da:\n"
-        "• Kunlik challenge eslatmasi\n"
-        "• Motivatsion xabar\n\n"
-        "Holatini o'zgartiring:",
-        reply_markup=builder.as_markup(), parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("notify_"))
-async def toggle_notify(callback: types.CallbackQuery):
-    val = 1 if callback.data == "notify_on" else 0
-    await db.set_notify(callback.from_user.id, val)
-    text = "✅ Eslatmalar yoqildi!" if val else "❌ Eslatmalar o'chirildi!"
-    await callback.answer(text, show_alert=True)
-
-# ===== SAVOL YUBORISH =====
 async def send_question(chat_id, state, bot):
     data = await state.get_data()
     questions, current, total = data["questions"], data["current_q"], data["count"]
@@ -243,9 +366,7 @@ async def send_question(chat_id, state, bot):
     is_challenge = data.get("is_challenge", False)
     is_dtm = data.get("is_dtm", False)
     progress = "▓" * current + "░" * (total - current)
-    if is_challenge: prefix = "🎯 Challenge"
-    elif is_dtm: prefix = "📝 DTM"
-    else: prefix = "📚"
+    prefix = "🎯" if is_challenge else "📝 DTM" if is_dtm else "📚"
     await bot.send_message(chat_id,
         f"{prefix} <b>{current+1}/{total}</b>  {progress}\n\n❓ <b>{q['question']}</b>",
         reply_markup=answer_kb(q["options"], current), parse_mode="HTML")
@@ -272,45 +393,32 @@ async def answer_question(callback: types.CallbackQuery, state: FSMContext):
     await asyncio.sleep(1.5)
     await send_question(callback.message.chat.id, state, callback.bot)
 
-# ===== TEST TUGASH =====
 async def finish_test(chat_id, state, bot):
     data = await state.get_data()
     correct, total = data["correct"], data["count"]
     subject = data.get("subject", "aralash")
     is_challenge = data.get("is_challenge", False)
-    is_dtm = data.get("is_dtm", False)
     pct = (correct / total) * 100
-
-    if pct >= 90: grade, msg = "🏆 A'lo!", "Ajoyib natija! 🌟"
+    if pct >= 90: grade, msg = "🏆 A'lo!", "Ajoyib! 🌟"
     elif pct >= 70: grade, msg = "👍 Yaxshi", "Davom eting!"
-    elif pct >= 50: grade, msg = "😐 Qoniqarli", "Yana mashq qiling!"
+    elif pct >= 50: grade, msg = "😐 Qoniqarli", "Mashq qiling!"
     else: grade, msg = "📚 Qoniqarsiz", "Ko'proq o'qing!"
-
     await db.save_test_result(chat_id, subject, correct, total)
-    if not is_challenge and not is_dtm:
-        await db.increment_daily_tests(chat_id)
-
+    if not is_challenge: await db.increment_daily_tests(chat_id)
     extra = ""
     if is_challenge:
         ball = correct * 10 + (20 if correct == total else 0)
         await db.save_challenge(chat_id, ball)
-        extra = f"\n🎯 Challenge ball: <b>+{ball}</b>"
-    elif is_dtm:
-        extra = f"\n📝 DTM natijasi: <b>{correct}/90</b> ({pct:.1f}%)"
-
+        extra = f"\n🎯 Ball: <b>+{ball}</b>"
     builder = InlineKeyboardBuilder()
     builder.button(text="🔄 Qayta", callback_data="restart_test")
     builder.button(text="🏆 Reyting", callback_data="show_leaderboard")
     builder.adjust(2)
-
     await bot.send_message(chat_id,
-        f"🎯 <b>Yakunlandi!</b>\n\n"
-        f"📊 <b>{correct}/{total}</b> — {pct:.0f}%{extra}\n\n"
-        f"{grade} {msg}",
+        f"🎯 <b>Yakunlandi!</b>\n📊 <b>{correct}/{total}</b> — {pct:.0f}%{extra}\n\n{grade} {msg}",
         reply_markup=builder.as_markup(), parse_mode="HTML")
     await state.clear()
 
-# ===== PROFIL =====
 @dp.message(F.text == "👤 Profil")
 async def profile(message: types.Message):
     uid = message.from_user.id
@@ -324,8 +432,7 @@ async def profile(message: types.Message):
         f"📊 Testlar: {stats['total_tests']}\n"
         f"🎯 O'rtacha: {stats['avg_score']:.1f}%\n"
         f"🏆 Reyting: {rank or '-'}-o'rin\n"
-        f"👥 Referal: {ref_count} kishi",
-        parse_mode="HTML")
+        f"👥 Referal: {ref_count} kishi", parse_mode="HTML")
 
 @dp.message(F.text == "📊 Natijalarim")
 async def results(message: types.Message):
@@ -344,7 +451,8 @@ async def results(message: types.Message):
 async def premium(message: types.Message):
     await message.answer(
         f"⭐ <b>SmartTalaba Premium</b>\n\n"
-        f"✅ Cheksiz testlar\n✅ DTM simulyatsiya\n✅ Batafsil statistika\n\n"
+        f"✅ Cheksiz testlar\n✅ DTM simulyatsiya\n"
+        f"✅ AI referat & konspekt\n✅ Statistika\n\n"
         f"📅 Oylik: <b>{MONTHLY_PRICE:,} so'm</b>\n"
         f"🎁 Yillik: <b>{YEARLY_PRICE:,} so'm</b>",
         reply_markup=premium_kb(), parse_mode="HTML")
@@ -355,8 +463,8 @@ async def buy(callback: types.CallbackQuery, state: FSMContext):
     price = MONTHLY_PRICE if plan == "monthly" else YEARLY_PRICE
     await callback.message.edit_text(
         f"💳 <b>{'Oylik' if plan=='monthly' else 'Yillik'} — {price:,} so'm</b>\n\n"
-        f"Karta: <code>{CARD_NUMBER}</code>\n\n"
-        f"Chek rasmini yuboring.\nIzoh: <code>Premium {callback.from_user.id}</code>", parse_mode="HTML")
+        f"Karta: <code>{CARD_NUMBER}</code>\n\nChek rasmini yuboring.\nIzoh: <code>Premium {callback.from_user.id}</code>",
+        parse_mode="HTML")
     await state.set_state(PaymentState.waiting_receipt)
     await state.update_data(plan=plan)
 
@@ -367,10 +475,38 @@ async def receipt(message: types.Message, state: FSMContext):
     await bot.send_message(ADMIN_ID,
         f"💳 To'lov!\n👤 {message.from_user.full_name}\n🆔 {message.from_user.id}\n"
         f"📦 {data.get('plan')}\n\n/approve {message.from_user.id} {data.get('plan')}")
-    await message.answer("✅ Chek qabul qilindi! Tez orada faollashtiradi.")
+    await message.answer("✅ Chek qabul qilindi!")
     await state.clear()
 
-# ===== ADMIN =====
+@dp.callback_query(F.data == "new_referat")
+async def new_referat(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("📝 Yangi mavzuni yozing:")
+    await state.set_state(AIState.referat_topic)
+
+@dp.callback_query(F.data == "new_qa")
+async def new_qa(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("❓ Savolingizni yozing:")
+    await state.set_state(AIState.qa_question)
+
+@dp.callback_query(F.data == "restart_test")
+async def restart(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.delete()
+    await callback.message.answer("📚 <b>Fan tanlang:</b>", reply_markup=subjects_kb(), parse_mode="HTML")
+    await state.set_state(TestState.choosing_subject)
+
+@dp.callback_query(F.data == "show_leaderboard")
+async def cb_lb(callback: types.CallbackQuery):
+    top = await db.get_leaderboard()
+    if not top:
+        await callback.answer("Reyting yo'q!", show_alert=True)
+        return
+    medals = ["🥇","🥈","🥉"]
+    text = "🏆 <b>Top o'quvchilar</b>\n\n"
+    for i, u in enumerate(top):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        text += f"{medal} <b>{u['full_name'] or 'Noma\'lum'}</b> — {u['avg_score']:.0f}%\n"
+    await callback.message.answer(text, parse_mode="HTML")
+
 @dp.message(Command("approve"))
 async def approve(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
@@ -387,71 +523,20 @@ async def broadcast(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     text = message.text.replace("/broadcast ", "")
     users = await db.get_all_users()
-    sent, failed = 0, 0
+    sent = 0
     for uid in users:
         try:
             await bot.send_message(uid, text, parse_mode="HTML")
             sent += 1
             await asyncio.sleep(0.05)
-        except: failed += 1
-    await message.answer(f"📢 Yuborildi: {sent}\n❌ Xato: {failed}")
+        except: pass
+    await message.answer(f"📢 Yuborildi: {sent} ta")
 
 @dp.message(Command("stats"))
 async def stats(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     s = await db.get_global_stats()
-    await message.answer(f"📊 Statistika:\n👥 {s['users']} foydalanuvchi\n⭐ {s['premium']} premium\n📝 {s['tests']} test")
-
-@dp.callback_query(F.data == "restart_test")
-async def restart(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.delete()
-    await callback.message.answer("📚 <b>Fan tanlang:</b>", reply_markup=subjects_kb(), parse_mode="HTML")
-    await state.set_state(TestState.choosing_subject)
-
-@dp.callback_query(F.data == "show_leaderboard")
-async def cb_leaderboard(callback: types.CallbackQuery):
-    top = await db.get_leaderboard()
-    if not top:
-        await callback.answer("Hozircha reyting yo'q!", show_alert=True)
-        return
-    medals = ["🥇","🥈","🥉"]
-    text = "🏆 <b>Top o'quvchilar</b>\n\n"
-    for i, u in enumerate(top):
-        medal = medals[i] if i < 3 else f"{i+1}."
-        text += f"{medal} <b>{u['full_name'] or 'Noma\'lum'}</b> — {u['avg_score']:.0f}%\n"
-    await callback.message.answer(text, parse_mode="HTML")
-
-@dp.message(F.text == "ℹ️ Yordam")
-async def help_cmd(message: types.Message):
-    await message.answer(
-        "ℹ️ <b>Yordam</b>\n\n"
-        "📚 Test boshlash — fan tanlang\n"
-        "🎯 Kunlik challenge — kuniga 1 marta\n"
-        "📝 DTM Simulyatsiya — 90 savol (Premium)\n"
-        "🏆 Reyting — top o'quvchilar\n"
-        "👥 Referal — do'st taklif qil, Premium ol\n"
-        "🔔 Eslatmalar — kunlik xabarlar\n"
-        "⭐ Premium — cheksiz testlar", parse_mode="HTML")
-
-# ===== KUNLIK ESLATMA =====
-async def send_daily_reminder():
-    while True:
-        now = __import__('datetime').datetime.now()
-        target = now.replace(hour=9, minute=0, second=0, microsecond=0)
-        if now >= target:
-            target = target + __import__('datetime').timedelta(days=1)
-        wait = (target - now).total_seconds()
-        await asyncio.sleep(wait)
-        users = await db.get_all_users()
-        for uid in users:
-            try:
-                await bot.send_message(uid,
-                    "🌅 <b>Xayrli tong!</b>\n\n"
-                    "🎯 Bugungi challenge sizi kutmoqda!\n"
-                    "📚 Har kun o'qish — muvaffaqiyat kaliti!\n\n"
-                    "Boshlang! 💪", parse_mode="HTML")
-                await asyncio.sleep(0.05)
-            except: pass
+    await message.answer(f"📊 {s['users']} user | {s['premium']} premium | {s['tests']} test")
 
 def get_questions(subject, count):
     all_q = [q for qs in QUESTIONS.values() for q in qs] if subject == "aralash" else QUESTIONS.get(subject, [])
@@ -461,7 +546,6 @@ def get_questions(subject, count):
 async def main():
     await db.init()
     logging.info("Bot ishga tushdi! 🚀")
-    asyncio.create_task(send_daily_reminder())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
