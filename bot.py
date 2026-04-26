@@ -22,7 +22,7 @@ MONTHLY_PRICE = 29900
 YEARLY_PRICE = 199000
 FREE_TESTS_PER_DAY = 3
 
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -32,7 +32,7 @@ db = Database()
 # ===== GEMINI AI =====
 async def ask_gemini(prompt: str) -> str:
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         async with aiohttp.ClientSession() as session:
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             async with session.post(url, json=payload, headers={"Content-Type": "application/json"}) as resp:
