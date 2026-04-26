@@ -3,6 +3,7 @@ import asyncio
 import os
 import random
 import aiohttp
+import tempfile
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -19,8 +20,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "123456789"))
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "8600 1234 5678 9012")
 COHERE_API_KEY = os.environ.get("COHERE_API_KEY", "")
-MONTHLY_PRICE = 29900
-YEARLY_PRICE = 199000
+MONTHLY_PRICE = 10000
+YEARLY_PRICE = 99000
 FREE_TESTS_PER_DAY = 3
 WEBHOOK_HOST = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
@@ -32,7 +33,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 db = Database()
 
-# ===== COHERE AI =====
+# ===== AI =====
 async def ask_ai(prompt: str) -> str:
     try:
         async with aiohttp.ClientSession() as session:
@@ -46,6 +47,14 @@ async def ask_ai(prompt: str) -> str:
     except Exception as e:
         return f"❌ Xato: {str(e)}"
 
+# ===== PDF =====
+async def images_to_pdf(image_paths: list) -> str:
+    import img2pdf
+    pdf_path = tempfile.mktemp(suffix=".pdf")
+    with open(pdf_path, "wb") as f:
+        f.write(img2pdf.convert(image_paths))
+    return pdf_path
+
 class TestState(StatesGroup):
     choosing_subject = State()
     choosing_count = State()
@@ -55,19 +64,20 @@ class PaymentState(StatesGroup):
     waiting_receipt = State()
 
 class AIState(StatesGroup):
-    referat_topic = State()
-    konspekt_topic = State()
     qa_question = State()
     search_query = State()
+
+class PDFState(StatesGroup):
+    collecting_images = State()
 
 def main_menu_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📚 Test boshlash"), KeyboardButton(text="🎯 Kunlik challenge")],
         [KeyboardButton(text="🏆 Reyting"), KeyboardButton(text="👥 Referal")],
-        [KeyboardButton(text="📝 Referat yozish"), KeyboardButton(text="📖 Konspekt")],
         [KeyboardButton(text="💬 AI Yordamchi"), KeyboardButton(text="🔍 Qidiruv")],
-        [KeyboardButton(text="📝 DTM Simulyatsiya"), KeyboardButton(text="⭐ Premium")],
-        [KeyboardButton(text="📊 Natijalarim"), KeyboardButton(text="👤 Profil")],
+        [KeyboardButton(text="📄 Rasm → PDF"), KeyboardButton(text="📝 DTM Simulyatsiya")],
+        [KeyboardButton(text="⭐ Premium"), KeyboardButton(text="📊 Natijalarim")],
+        [KeyboardButton(text="👤 Profil"), KeyboardButton(text="ℹ️ Yordam")],
     ], resize_keyboard=True)
 
 def subjects_kb():
@@ -101,6 +111,13 @@ def premium_kb():
     builder.adjust(1)
     return builder.as_markup()
 
+def pdf_done_kb():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ PDF yaratish", callback_data="create_pdf")
+    builder.button(text="❌ Bekor qilish", callback_data="cancel_pdf")
+    builder.adjust(2)
+    return builder.as_markup()
+
 @dp.message(CommandStart())
 async def start(message: types.Message):
     user = message.from_user
@@ -119,48 +136,78 @@ async def start(message: types.Message):
         except: pass
     await message.answer(
         f"👋 Salom, <b>{user.first_name}</b>!\n\n🎓 <b>SmartTalaba Bot</b>\n\n"
-        f"📚 9 fandan testlar\n🎯 Kunlik challenge\n📝 AI referat & konspekt\n"
-        f"💬 AI yordamchi\n🏆 Reyting\n👥 Referal — Premium ol!\n\n"
+        f"📚 9 fandan testlar\n🎯 Kunlik challenge\n"
+        f"📄 Rasm → PDF\n💬 AI yordamchi\n"
+        f"🏆 Reyting\n👥 Referal — Premium ol!\n\n"
         f"Bepul: kuniga {FREE_TESTS_PER_DAY} ta test",
         reply_markup=main_menu_kb(), parse_mode="HTML")
 
-@dp.message(F.text == "📝 Referat yozish")
-async def referat_start(message: types.Message, state: FSMContext):
-    await message.answer("📝 <b>Referat mavzusini yozing:</b>", parse_mode="HTML")
-    await state.set_state(AIState.referat_topic)
-
-@dp.message(AIState.referat_topic)
-async def write_referat(message: types.Message, state: FSMContext):
-    topic = message.text
-    await state.clear()
-    wait_msg = await message.answer("⏳ Referat yozilmoqda...")
-    result = await ask_ai(f"O'zbek tilida '{topic}' mavzusida to'liq referat yoz. Kirish, 3 asosiy bo'lim, xulosa, adabiyotlar.")
-    await wait_msg.delete()
-    parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
-    for i, part in enumerate(parts):
-        await message.answer(f"📝 <b>({i+1}/{len(parts)})</b>\n\n{part}", parse_mode="HTML")
-        await asyncio.sleep(0.3)
+# ===== PDF =====
+@dp.message(F.text == "📄 Rasm → PDF")
+async def pdf_start(message: types.Message, state: FSMContext):
+    await state.update_data(images=[])
     builder = InlineKeyboardBuilder()
-    builder.button(text="📝 Boshqa mavzu", callback_data="new_referat")
-    await message.answer("✅ Referat tayyor!", reply_markup=builder.as_markup())
+    builder.button(text="✅ PDF yaratish", callback_data="create_pdf")
+    builder.button(text="❌ Bekor qilish", callback_data="cancel_pdf")
+    builder.adjust(2)
+    await message.answer(
+        "📄 <b>Rasm → PDF</b>\n\n"
+        "Rasmlarni yuboring (bitta yoki bir nechta)\n"
+        "Hammasi yuborilgandan so'ng <b>✅ PDF yaratish</b> bosing!",
+        reply_markup=builder.as_markup(), parse_mode="HTML")
+    await state.set_state(PDFState.collecting_images)
 
-@dp.message(F.text == "📖 Konspekt")
-async def konspekt_start(message: types.Message, state: FSMContext):
-    await message.answer("📖 <b>Konspekt mavzusini yozing:</b>", parse_mode="HTML")
-    await state.set_state(AIState.konspekt_topic)
+@dp.message(PDFState.collecting_images, F.photo)
+async def collect_image(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    images = data.get("images", [])
+    photo = message.photo[-1]
+    images.append(photo.file_id)
+    await state.update_data(images=images)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ PDF yaratish", callback_data="create_pdf")
+    builder.button(text="❌ Bekor qilish", callback_data="cancel_pdf")
+    builder.adjust(2)
+    await message.answer(
+        f"✅ Rasm qabul qilindi! Jami: <b>{len(images)} ta</b>\n\nYana rasm yuboring yoki PDF yarating!",
+        reply_markup=builder.as_markup(), parse_mode="HTML")
 
-@dp.message(AIState.konspekt_topic)
-async def write_konspekt(message: types.Message, state: FSMContext):
-    topic = message.text
+@dp.callback_query(F.data == "create_pdf")
+async def create_pdf(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    images = data.get("images", [])
+    if not images:
+        await callback.answer("❌ Hech qanday rasm yo'q!", show_alert=True)
+        return
+    await callback.message.edit_text("⏳ PDF yaratilmoqda...")
+    try:
+        image_paths = []
+        for file_id in images:
+            file = await bot.get_file(file_id)
+            file_path = tempfile.mktemp(suffix=".jpg")
+            await bot.download_file(file.file_path, destination=file_path)
+            image_paths.append(file_path)
+        pdf_path = await images_to_pdf(image_paths)
+        await callback.message.answer_document(
+            types.FSInputFile(pdf_path, filename="SmartTalaba.pdf"),
+            caption=f"✅ PDF tayyor! {len(images)} ta rasm")
+        for p in image_paths:
+            try: os.remove(p)
+            except: pass
+        try: os.remove(pdf_path)
+        except: pass
+    except Exception as e:
+        await callback.message.answer(f"❌ Xato: {str(e)}")
     await state.clear()
-    wait_msg = await message.answer("⏳ Konspekt tayyorlanmoqda...")
-    result = await ask_ai(f"O'zbek tilida '{topic}' mavzusida qisqa konspekt yoz: asosiy tushunchalar, ta'riflar, formulalar, misollar, 5 nazorat savoli.")
-    await wait_msg.delete()
-    parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
-    for i, part in enumerate(parts):
-        await message.answer(part, parse_mode="HTML")
-        await asyncio.sleep(0.3)
+    await callback.message.answer("Bosh menyuga qaytdingiz!", reply_markup=main_menu_kb())
 
+@dp.callback_query(F.data == "cancel_pdf")
+async def cancel_pdf(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Bekor qilindi!")
+    await callback.message.answer("Bosh menyuga qaytdingiz!", reply_markup=main_menu_kb())
+
+# ===== AI =====
 @dp.message(F.text == "💬 AI Yordamchi")
 async def qa_start(message: types.Message, state: FSMContext):
     await message.answer("💬 <b>Savolingizni yozing!</b>", parse_mode="HTML")
@@ -194,6 +241,7 @@ async def do_search(message: types.Message, state: FSMContext):
         await message.answer(part)
         await asyncio.sleep(0.3)
 
+# ===== TEST =====
 @dp.message(F.text == "📚 Test boshlash")
 async def start_test(message: types.Message, state: FSMContext):
     if not await db.is_premium(message.from_user.id) and await db.get_daily_tests(message.from_user.id) >= FREE_TESTS_PER_DAY:
@@ -361,7 +409,8 @@ async def results(message: types.Message):
 @dp.message(F.text == "⭐ Premium")
 async def premium(message: types.Message):
     await message.answer(
-        f"⭐ <b>SmartTalaba Premium</b>\n\n✅ Cheksiz testlar\n✅ DTM simulyatsiya\n✅ AI referat & konspekt\n\n"
+        f"⭐ <b>SmartTalaba Premium</b>\n\n"
+        f"✅ Cheksiz testlar\n✅ DTM simulyatsiya\n✅ AI yordamchi\n✅ PDF yaratish\n\n"
         f"📅 Oylik: <b>{MONTHLY_PRICE:,} so'm</b>\n🎁 Yillik: <b>{YEARLY_PRICE:,} so'm</b>",
         reply_markup=premium_kb(), parse_mode="HTML")
 
@@ -385,11 +434,6 @@ async def receipt(message: types.Message, state: FSMContext):
         f"📦 {data.get('plan')}\n\n/approve {message.from_user.id} {data.get('plan')}")
     await message.answer("✅ Chek qabul qilindi!")
     await state.clear()
-
-@dp.callback_query(F.data == "new_referat")
-async def new_referat(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("📝 Yangi mavzuni yozing:")
-    await state.set_state(AIState.referat_topic)
 
 @dp.callback_query(F.data == "new_qa")
 async def new_qa(callback: types.CallbackQuery, state: FSMContext):
@@ -446,6 +490,19 @@ async def stats(message: types.Message):
     s = await db.get_global_stats()
     await message.answer(f"📊 {s['users']} user | {s['premium']} premium | {s['tests']} test")
 
+@dp.message(F.text == "ℹ️ Yordam")
+async def help_cmd(message: types.Message):
+    await message.answer(
+        "ℹ️ <b>Yordam</b>\n\n"
+        "📚 Test boshlash — fan tanlang\n"
+        "🎯 Kunlik challenge — kuniga 1 marta\n"
+        "📄 Rasm → PDF — rasmlardan PDF\n"
+        "💬 AI Yordamchi — savol-javob\n"
+        "📝 DTM — 90 savol (Premium)\n"
+        "🏆 Reyting — top o'quvchilar\n"
+        "👥 Referal — Premium ol\n"
+        "⭐ Premium: <b>{MONTHLY_PRICE:,} so'm/oy</b>", parse_mode="HTML")
+
 def get_questions(subject, count):
     all_q = [q for qs in QUESTIONS.values() for q in qs] if subject == "aralash" else QUESTIONS.get(subject, [])
     if not all_q: return []
@@ -454,7 +511,7 @@ def get_questions(subject, count):
 async def on_startup(app):
     await db.init()
     await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"Webhook set: {WEBHOOK_URL}")
+    logging.info(f"Bot ishga tushdi! Webhook: {WEBHOOK_URL}")
 
 async def on_shutdown(app):
     await bot.delete_webhook()
