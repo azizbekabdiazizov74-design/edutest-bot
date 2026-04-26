@@ -28,10 +28,10 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 db = Database()
 
-# ===== GEMINI AI =====
+# ===== OPENAI GPT =====
 async def ask_gemini(prompt: str) -> str:
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        url = "https://api.openai.com/v1/chat/completions"
         async with aiohttp.ClientSession() as session:
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             async with session.post(url, json=payload, headers={"Content-Type": "application/json"}) as resp:
@@ -555,3 +555,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
