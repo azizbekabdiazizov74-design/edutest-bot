@@ -3,7 +3,6 @@ import asyncio
 import os
 import random
 import aiohttp
-import json
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -17,33 +16,43 @@ from questions import QUESTIONS
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "123456789"))
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "8600 1234 5678 9012")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "YOUR_OPENAI_KEY")
+COHERE_API_KEY = os.environ.get("COHERE_API_KEY", "YOUR_COHERE_KEY")
 MONTHLY_PRICE = 29900
 YEARLY_PRICE = 199000
 FREE_TESTS_PER_DAY = 3
-
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 db = Database()
 
-# ===== OPENAI GPT =====
-async def ask_gemini(prompt: str) -> str:
+# ===== COHERE AI =====
+async def ask_ai(prompt: str) -> str:
     try:
-        url = "https://api.openai.com/v1/chat/completions"
         async with aiohttp.ClientSession() as session:
-            payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            async with session.post(url, json=payload, headers={"Content-Type": "application/json"}) as resp:
+            headers = {
+                "Authorization": f"Bearer {COHERE_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "command-r",
+                "message": prompt,
+                "max_tokens": 2000,
+                "temperature": 0.7
+            }
+            async with session.post(
+                "https://api.cohere.com/v1/chat",
+                json=payload, headers=headers
+            ) as resp:
                 data = await resp.json()
-                if "candidates" in data and len(data["candidates"]) > 0:
-                    return data["candidates"][0]["content"]["parts"][0]["text"]
-                elif "error" in data:
-                    return f"❌ API xato: {data['error'].get('message', 'Noma\'lum xato')}"
+                if "text" in data:
+                    return data["text"]
+                elif "message" in data:
+                    return f"❌ API xato: {data['message']}"
                 else:
-                    return "❌ Javob olishda xato yuz berdi. Qayta urinib ko'ring."
+                    return "❌ Javob olishda xato. Qayta urinib ko'ring."
     except Exception as e:
-        return f"❌ Xato yuz berdi: {str(e)}"
+        return f"❌ Xato: {str(e)}"
 
 # ===== STATES =====
 class TestState(StatesGroup):
@@ -137,11 +146,7 @@ async def start(message: types.Message):
 # ===== REFERAT =====
 @dp.message(F.text == "📝 Referat yozish")
 async def referat_start(message: types.Message, state: FSMContext):
-    await message.answer(
-        "📝 <b>Referat yozish</b>\n\n"
-        "Qaysi mavzuda referat kerak?\n"
-        "Masalan: <i>O'zbekiston tarixi, Fotosintez, Matematik analiz</i>",
-        parse_mode="HTML")
+    await message.answer("📝 <b>Referat mavzusini yozing:</b>\nMasalan: O'zbekiston tarixi, Fotosintez", parse_mode="HTML")
     await state.set_state(AIState.referat_topic)
 
 @dp.message(AIState.referat_topic)
@@ -149,20 +154,15 @@ async def write_referat(message: types.Message, state: FSMContext):
     topic = message.text
     await state.clear()
     wait_msg = await message.answer("⏳ Referat yozilmoqda... (30-60 soniya)")
-    
     prompt = f"""O'zbek tilida '{topic}' mavzusida to'liq referat yoz.
 Tuzilishi:
-1. Kirish (100-150 so'z)
-2. Asosiy qism (3-4 bo'lim, har biri 200-300 so'z)
-3. Xulosa (100 so'z)
-4. Foydalanilgan adabiyotlar (5 ta)
-
-Ilmiy uslubda, to'liq va sifatli yoz."""
-
-    result = await ask_gemini(prompt)
+1. Kirish
+2. Asosiy qism (3-4 bo'lim)
+3. Xulosa
+4. Foydalanilgan adabiyotlar
+Ilmiy uslubda yoz."""
+    result = await ask_ai(prompt)
     await wait_msg.delete()
-    
-    # Uzun matnni bo'lib yuborish
     if len(result) > 4000:
         parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
         for i, part in enumerate(parts):
@@ -170,7 +170,6 @@ Ilmiy uslubda, to'liq va sifatli yoz."""
             await asyncio.sleep(0.5)
     else:
         await message.answer(f"📝 <b>Referat: {topic}</b>\n\n{result}", parse_mode="HTML")
-    
     builder = InlineKeyboardBuilder()
     builder.button(text="📝 Boshqa mavzu", callback_data="new_referat")
     await message.answer("✅ Referat tayyor!", reply_markup=builder.as_markup())
@@ -178,11 +177,7 @@ Ilmiy uslubda, to'liq va sifatli yoz."""
 # ===== KONSPEKT =====
 @dp.message(F.text == "📖 Konspekt")
 async def konspekt_start(message: types.Message, state: FSMContext):
-    await message.answer(
-        "📖 <b>Konspekt yaratish</b>\n\n"
-        "Qaysi mavzu yoki fan bo'yicha konspekt kerak?\n"
-        "Masalan: <i>Termodinamika 1-qonun, SQL asoslari</i>",
-        parse_mode="HTML")
+    await message.answer("📖 <b>Konspekt mavzusini yozing:</b>", parse_mode="HTML")
     await state.set_state(AIState.konspekt_topic)
 
 @dp.message(AIState.konspekt_topic)
@@ -190,24 +185,18 @@ async def write_konspekt(message: types.Message, state: FSMContext):
     topic = message.text
     await state.clear()
     wait_msg = await message.answer("⏳ Konspekt tayyorlanmoqda...")
-
-    prompt = f"""O'zbek tilida '{topic}' mavzusida qisqa va aniq konspekt yoz.
-Format:
+    prompt = f"""O'zbek tilida '{topic}' mavzusida qisqa konspekt yoz.
 📌 Asosiy tushunchalar
-📋 Muhim ta'riflar  
-🔑 Kalit formulalar/qoidalar
+📋 Muhim ta'riflar
+🔑 Kalit formulalar
 💡 Misollar
-❓ Nazorat savollari (5 ta)
-
-Strukturali, o'qishga qulay qilib yoz."""
-
-    result = await ask_gemini(prompt)
+❓ Nazorat savollari (5 ta)"""
+    result = await ask_ai(prompt)
     await wait_msg.delete()
-    
     if len(result) > 4000:
         parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
-        for i, part in enumerate(parts):
-            await message.answer(f"📖 <b>Konspekt ({i+1}/{len(parts)}):</b>\n\n{part}", parse_mode="HTML")
+        for part in parts:
+            await message.answer(part, parse_mode="HTML")
             await asyncio.sleep(0.5)
     else:
         await message.answer(f"📖 <b>Konspekt: {topic}</b>\n\n{result}", parse_mode="HTML")
@@ -215,44 +204,27 @@ Strukturali, o'qishga qulay qilib yoz."""
 # ===== AI YORDAMCHI =====
 @dp.message(F.text == "💬 AI Yordamchi")
 async def qa_start(message: types.Message, state: FSMContext):
-    await message.answer(
-        "💬 <b>AI Yordamchi</b>\n\n"
-        "Istalgan savolingizni bering!\n"
-        "Masalan:\n"
-        "• <i>Integral nima?</i>\n"
-        "• <i>Essay qanday yoziladi?</i>\n"
-        "• <i>Fotosintezni tushuntir</i>",
-        parse_mode="HTML")
+    await message.answer("💬 <b>Savolingizni yozing!</b>\nMasalan: Integral nima? Essay qanday yoziladi?", parse_mode="HTML")
     await state.set_state(AIState.qa_question)
 
 @dp.message(AIState.qa_question)
 async def answer_qa(message: types.Message, state: FSMContext):
     question = message.text
     wait_msg = await message.answer("💭 O'ylanmoqda...")
-
-    prompt = f"""Sen o'zbek tilida javob beruvchi aqlli o'qituvchisan.
-Savol: {question}
-
-Aniq, tushunarli va qisqa javob ber. Kerak bo'lsa misollar keltir."""
-
-    result = await ask_gemini(prompt)
+    prompt = f"Sen o'zbek tilida javob beruvchi aqlli o'qituvchisan. Savol: {question}\nAniq va tushunarli javob ber."
+    result = await ask_ai(prompt)
     await wait_msg.delete()
     await message.answer(f"💬 <b>Javob:</b>\n\n{result}", parse_mode="HTML")
-    
     builder = InlineKeyboardBuilder()
     builder.button(text="❓ Yana savol", callback_data="new_qa")
     builder.button(text="🏠 Bosh menyu", callback_data="main_menu")
     builder.adjust(2)
-    await message.answer("Yana savol berishingiz mumkin yoki boshqa xizmatdan foydalaning!", reply_markup=builder.as_markup())
+    await message.answer("Yana savol bering!", reply_markup=builder.as_markup())
 
 # ===== QIDIRUV =====
 @dp.message(F.text == "🔍 Qidiruv")
 async def search_start(message: types.Message, state: FSMContext):
-    await message.answer(
-        "🔍 <b>Qidiruv</b>\n\n"
-        "Nima haqida ma'lumot kerak?\n"
-        "Masalan: <i>Albert Einstein, Kvant fizikasi, O'zbekiston</i>",
-        parse_mode="HTML")
+    await message.answer("🔍 <b>Nima haqida ma'lumot kerak?</b>", parse_mode="HTML")
     await state.set_state(AIState.search_query)
 
 @dp.message(AIState.search_query)
@@ -260,21 +232,13 @@ async def do_search(message: types.Message, state: FSMContext):
     query = message.text
     await state.clear()
     wait_msg = await message.answer("🔍 Qidirilmoqda...")
-
-    prompt = f"""'{query}' haqida O'zbek tilida to'liq va aniq ma'lumot ber.
-Quyidagilarni o'z ichiga ol:
-📌 Asosiy ma'lumot
-📅 Muhim sanalar (agar mavjud)
-🌟 Qiziqarli faktlar
-📚 Qo'shimcha o'rganish uchun tavsiyalar"""
-
-    result = await ask_gemini(prompt)
+    prompt = f"'{query}' haqida O'zbek tilida to'liq ma'lumot ber. Asosiy faktlar, muhim sanalar, qiziqarli faktlarni kirit."
+    result = await ask_ai(prompt)
     await wait_msg.delete()
-    
     if len(result) > 4000:
         parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
         for part in parts:
-            await message.answer(part, parse_mode="HTML")
+            await message.answer(part)
             await asyncio.sleep(0.3)
     else:
         await message.answer(f"🔍 <b>{query}</b>\n\n{result}", parse_mode="HTML")
@@ -283,8 +247,7 @@ Quyidagilarni o'z ichiga ol:
 @dp.message(F.text == "📚 Test boshlash")
 async def start_test(message: types.Message, state: FSMContext):
     if not await db.is_premium(message.from_user.id) and await db.get_daily_tests(message.from_user.id) >= FREE_TESTS_PER_DAY:
-        await message.answer(f"⚠️ Bugungi bepul testlar tugadi!\n\n⭐ Premium — cheksiz testlar!\n<b>{MONTHLY_PRICE:,} so'm/oy</b>",
-            reply_markup=premium_kb(), parse_mode="HTML")
+        await message.answer(f"⚠️ Bugungi bepul testlar tugadi!\n\n⭐ Premium — cheksiz testlar!\n<b>{MONTHLY_PRICE:,} so'm/oy</b>", reply_markup=premium_kb(), parse_mode="HTML")
         return
     await message.answer("📚 <b>Fan tanlang:</b>", reply_markup=subjects_kb(), parse_mode="HTML")
     await state.set_state(TestState.choosing_subject)
@@ -297,19 +260,7 @@ async def daily_challenge(message: types.Message, state: FSMContext):
         return
     questions = get_questions("aralash", 5)
     await state.update_data(questions=questions, current_q=0, correct=0, count=5, is_challenge=True, is_dtm=False)
-    await message.answer("🎯 <b>Kunlik Challenge!</b>\n\n5 savol — har to'g'ri +10 ball\n5/5 → +20 bonus! 🎁", parse_mode="HTML")
-    await send_question(message.chat.id, state, bot)
-    await state.set_state(TestState.answering)
-
-@dp.message(F.text == "📝 DTM Simulyatsiya")
-async def dtm_mode(message: types.Message, state: FSMContext):
-    if not await db.is_premium(message.from_user.id):
-        await message.answer("📝 <b>DTM Simulyatsiya — Premium!</b>\n\n90 savol, haqiqiy DTM sharoiti\n\n"
-            f"⭐ <b>{MONTHLY_PRICE:,} so'm/oy</b>", reply_markup=premium_kb(), parse_mode="HTML")
-        return
-    questions = get_questions("aralash", 90)
-    await state.update_data(questions=questions, current_q=0, correct=0, count=len(questions), is_dtm=True, is_challenge=False)
-    await message.answer("📝 <b>DTM Simulyatsiya!</b>\n90 ta savol\nOmad! 🍀", parse_mode="HTML")
+    await message.answer("🎯 <b>Kunlik Challenge!</b>\n5 savol — har to'g'ri +10 ball\n5/5 → +20 bonus! 🎁", parse_mode="HTML")
     await send_question(message.chat.id, state, bot)
     await state.set_state(TestState.answering)
 
@@ -317,7 +268,7 @@ async def dtm_mode(message: types.Message, state: FSMContext):
 async def leaderboard(message: types.Message):
     top = await db.get_leaderboard()
     if not top:
-        await message.answer("🏆 Hozircha reyting yo'q!")
+        await message.answer("🏆 Hozircha reyting yo'q. Test ishlang!")
         return
     medals = ["🥇","🥈","🥉"]
     text = "🏆 <b>Top o'quvchilar</b>\n\n"
@@ -335,11 +286,22 @@ async def referral(message: types.Message):
     bot_info = await bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{uid}"
     await message.answer(
-        f"👥 <b>Do'stlarni taklif qil!</b>\n\n"
-        f"🔗 <code>{ref_link}</code>\n\n"
+        f"👥 <b>Do'stlarni taklif qil!</b>\n\n🔗 <code>{ref_link}</code>\n\n"
         f"👤 Taklif: <b>{ref_count} kishi</b>\n\n"
         f"🎁 1 do'st → 1 kun\n3 do'st → 3 kun\n5 do'st → 7 kun\n10 do'st → 30 kun Premium",
         parse_mode="HTML")
+
+@dp.message(F.text == "📝 DTM Simulyatsiya")
+async def dtm_mode(message: types.Message, state: FSMContext):
+    if not await db.is_premium(message.from_user.id):
+        await message.answer("📝 <b>DTM Simulyatsiya — Premium!</b>\n\n90 savol\n\n"
+            f"⭐ <b>{MONTHLY_PRICE:,} so'm/oy</b>", reply_markup=premium_kb(), parse_mode="HTML")
+        return
+    questions = get_questions("aralash", 90)
+    await state.update_data(questions=questions, current_q=0, correct=0, count=len(questions), is_dtm=True, is_challenge=False)
+    await message.answer("📝 <b>DTM Simulyatsiya!</b>\n90 ta savol. Omad! 🍀", parse_mode="HTML")
+    await send_question(message.chat.id, state, bot)
+    await state.set_state(TestState.answering)
 
 @dp.callback_query(F.data.startswith("subject_"))
 async def choose_subject(callback: types.CallbackQuery, state: FSMContext):
@@ -456,8 +418,7 @@ async def results(message: types.Message):
 async def premium(message: types.Message):
     await message.answer(
         f"⭐ <b>SmartTalaba Premium</b>\n\n"
-        f"✅ Cheksiz testlar\n✅ DTM simulyatsiya\n"
-        f"✅ AI referat & konspekt\n✅ Statistika\n\n"
+        f"✅ Cheksiz testlar\n✅ DTM simulyatsiya\n✅ AI referat & konspekt\n\n"
         f"📅 Oylik: <b>{MONTHLY_PRICE:,} so'm</b>\n"
         f"🎁 Yillik: <b>{YEARLY_PRICE:,} so'm</b>",
         reply_markup=premium_kb(), parse_mode="HTML")
