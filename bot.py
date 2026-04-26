@@ -17,12 +17,11 @@ from questions import QUESTIONS
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "123456789"))
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "8600 1234 5678 9012")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "YOUR_OPENAI_KEY")
 MONTHLY_PRICE = 29900
 YEARLY_PRICE = 199000
 FREE_TESTS_PER_DAY = 3
 
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
