@@ -32,13 +32,19 @@ db = Database()
 # ===== GEMINI AI =====
 async def ask_gemini(prompt: str) -> str:
     try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         async with aiohttp.ClientSession() as session:
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            async with session.post(GEMINI_URL, json=payload) as resp:
+            async with session.post(url, json=payload, headers={"Content-Type": "application/json"}) as resp:
                 data = await resp.json()
-                return data["candidates"][0]["content"]["parts"][0]["text"]
+                if "candidates" in data and len(data["candidates"]) > 0:
+                    return data["candidates"][0]["content"]["parts"][0]["text"]
+                elif "error" in data:
+                    return f"❌ API xato: {data['error'].get('message', 'Noma\'lum xato')}"
+                else:
+                    return "❌ Javob olishda xato yuz berdi. Qayta urinib ko'ring."
     except Exception as e:
-        return f"❌ Xato: {str(e)}"
+        return f"❌ Xato yuz berdi: {str(e)}"
 
 # ===== STATES =====
 class TestState(StatesGroup):
